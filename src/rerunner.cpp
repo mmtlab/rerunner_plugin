@@ -62,8 +62,6 @@ private:
   bool _enable_skeleton = false;
   bool _enable_bones = true;
   bool _enable_keypoints = true;
-  bool _use_confidence_colors = false;
-  double _min_confidence = 0.0;
 
   std::vector<std::string> _keypaths;
   std::vector<std::string> _acf_keypaths;
@@ -145,8 +143,7 @@ private:
 
   // Helper: Extract 3D position from JSON keypath
   // Supports both /path/x, /path/y, /path/z AND /path/crd/0, /path/crd/1, /path/crd/2
-  std::optional<std::array<double, 3>> 
-  extract_3d_position(const json &data, const std::string &keypath) {
+  std::optional<std::array<double, 3>> extract_3d_position(const json &data, const std::string &keypath) {
       // Try new format first: /JOINT/crd/0, /JOINT/crd/1, /JOINT/crd/2
       auto x_val = get_numeric_value(data, keypath + "/crd/0");
       auto y_val = get_numeric_value(data, keypath + "/crd/1");
@@ -163,142 +160,12 @@ private:
       return std::nullopt;
   }
 
-  // Helper: Extract 2D position from JSON keypath
-  std::optional<std::array<double, 2>> 
-  extract_2d_position(const json &data, const std::string &keypath) {
-      // Try new format first: /JOINT/crd/0, /JOINT/crd/1
-      auto x_val = get_numeric_value(data, keypath + "/crd/0");
-      auto y_val = get_numeric_value(data, keypath + "/crd/1");
-      
-      // Fall back to old format: /path/x, /path/y
-      if (!x_val) x_val = get_numeric_value(data, keypath + "/x");
-      if (!y_val) y_val = get_numeric_value(data, keypath + "/y");
-      
-      if (x_val && y_val) {
-          return std::array<double, 2>{*x_val, *y_val};
-      }
-      return std::nullopt;
-  }
-
-  // Helper: Extract confidence from covariance matrix
-  // HPE format uses /JOINT/unc/0 through /JOINT/unc/5 as a 3x3 covariance matrix
-  // Returns confidence as 1/(1 + trace), where lower covariance = higher confidence
-  std::optional<double>
-  extract_confidence(const json &data, const std::string &keypath) {
-      // Try to extract the 6 covariance components (3x3 symmetric matrix)
-      // unc/0: var_x, unc/1: var_y, unc/2: var_z, unc/3: cov_xy, unc/4: cov_xz, unc/5: cov_yz
-      auto var_x = get_numeric_value(data, keypath + "/unc/0");
-      auto var_y = get_numeric_value(data, keypath + "/unc/1");
-      auto var_z = get_numeric_value(data, keypath + "/unc/2");
-      
-      if (var_x && var_y && var_z) {
-          // Calculate trace of covariance matrix (sum of diagonal elements)
-          double trace = *var_x + *var_y + *var_z;
-          // Convert to confidence: lower covariance = higher confidence
-          // Using 1/(1 + trace) to normalize to [0, 1] range
-          double confidence = 1.0 / (1.0 + trace);
-          return confidence;
-      }
-      
-      // Fall back to standard format: /JOINT/confidence
-      auto conf_val = get_numeric_value(data, keypath + "/confidence");
-      return conf_val;
-  }
-
   // Color by confidence (red=low, green=high)
   rerun::Color confidence_to_color(double confidence) {
       confidence = std::max(0.0, std::min(1.0, confidence));
       uint8_t red = static_cast<uint8_t>((1.0 - confidence) * 255);
       uint8_t green = static_cast<uint8_t>(confidence * 255);
       return rerun::Color(red, green, 100, 255);
-  }
-
-  // Main skeleton visualization function
-  bool log_skeleton_visualization(const json &data, double time_seconds) {
-      if (!_enable_skeleton || _skeleton_keypoint_paths.empty()) {
-          return false;
-      }
-      
-      bool logged = false;
-      std::vector<rerun::Position3D> positions_3d;
-      std::vector<float> confidences;
-      std::vector<rerun::Color> colors;
-      
-      // Extract all keypoints
-      for (size_t i = 0; i < _skeleton_keypoint_paths.size(); ++i) {
-          const auto& kp_path = _skeleton_keypoint_paths[i];
-          double conf = 1.0;
-          
-          if (auto conf_val = extract_confidence(data, kp_path)) {
-              conf = *conf_val;
-          }
-          
-          confidences.push_back(static_cast<float>(conf));
-          rerun::Color color = _use_confidence_colors 
-              ? confidence_to_color(conf)
-              : rerun::Color(0, 255, 0, 255);
-          colors.push_back(color);
-          
-          if (auto pos = extract_3d_position(data, kp_path)) {
-              positions_3d.push_back(rerun::Position3D(pos->at(0), pos->at(1), pos->at(2)));
-          } 
-          else if (auto pos2d = extract_2d_position(data, kp_path)) {
-              positions_3d.push_back(rerun::Position3D(pos2d->at(0), pos2d->at(1), 0.0));
-          }
-          else {
-              positions_3d.push_back(rerun::Position3D(0, 0, 0));
-          }
-      }
-      
-      // Log keypoints
-      if (_enable_keypoints && !positions_3d.empty()) {
-          auto points_entity = rerun::Points3D(positions_3d)
-              .with_colors(colors)
-              .with_radii({0.02f});
-          
-          _rec->log("skeleton/keypoints", points_entity);
-          logged = true;
-      }
-      
-      // Log bones
-      if (_enable_bones && !positions_3d.empty() && _skeleton.bone_count() > 0) {
-          std::vector<rerun::Position3D> bone_points;
-          std::vector<rerun::Color> bone_colors;
-          
-          for (const auto& bone : _skeleton.bones()) {
-              if (bone.start_joint < positions_3d.size() && 
-                  bone.end_joint < positions_3d.size()) {
-                  
-                  bool start_valid = confidences[bone.start_joint] >= _min_confidence;
-                  bool end_valid = confidences[bone.end_joint] >= _min_confidence;
-                  
-                  if (start_valid && end_valid) {
-                      bone_points.push_back(rerun::Position3D(positions_3d[bone.start_joint]));
-                      bone_points.push_back(rerun::Position3D(positions_3d[bone.end_joint]));
-                      
-                      double avg_conf = (confidences[bone.start_joint] + 
-                                        confidences[bone.end_joint]) / 2.0;
-                      bone_colors.push_back(confidence_to_color(avg_conf));
-                      bone_colors.push_back(confidence_to_color(avg_conf));
-                  }
-              }
-          }
-          
-          if (!bone_points.empty()) {
-              std::vector<uint32_t> strip_lengths;
-              for (size_t i = 0; i < bone_points.size(); i += 2) {
-                  strip_lengths.push_back(2);
-              }
-              
-              auto bones_entity = rerun::LineStrips3D(bone_points)
-                  .with_colors(bone_colors);
-              
-              _rec->log("skeleton/bones", bones_entity);
-              logged = true;
-          }
-      }
-      
-      return logged;
   }
 
 public:
@@ -393,126 +260,66 @@ public:
 
     // Log skeleton visualization if enabled
     if (_enable_skeleton && !_skeleton_keypoint_paths.empty()) {
-        std::vector<rerun::Position3D> positions;
-        std::vector<float> confidences;
-        
-        // Extract all keypoint positions and log coordinates as time series
-        for (size_t i = 0; i < _skeleton_keypoint_paths.size(); ++i) {
-          const auto& kp_path = _skeleton_keypoint_paths[i];
+      std::vector<std::array<float, 3>> joint_positions = {};
+      
+      // Extract all keypoint positions and log coordinates as time series
+      for (size_t i = 0; i < _skeleton_keypoint_paths.size(); ++i) {
+        const auto& kp_path = _skeleton_keypoint_paths[i];
 
-          // Build alternative paths to match incoming JSON keys
-          const std::string full_path = "/" + topic + kp_path;        // e.g. /topic/ANKL
-          const std::string raw_path = kp_path;                        // e.g. /ANKL
-          const std::string topic_prefixed_no_slash = topic + kp_path; // e.g. topic/ANKL
+        // Build alternative paths to match incoming JSON keys
+        const std::string full_path = "/" + topic + kp_path;        // e.g. /topic/ANKL
+        const std::string raw_path = kp_path;                        // e.g. /ANKL
+        const std::string topic_prefixed_no_slash = topic + kp_path; // e.g. topic/ANKL
 
-          std::optional<std::array<double, 3>> pos;
-          pos = extract_3d_position(data, full_path);
-          if (!pos) pos = extract_3d_position(data, raw_path);
-          if (!pos) pos = extract_3d_position(data, topic_prefixed_no_slash);
-            
-          if (pos) {
-            positions.push_back(rerun::Position3D(pos->at(0), pos->at(1), pos->at(2)));
+        std::optional<std::array<double, 3>> pos;
+        pos = extract_3d_position(data, full_path);
+        if (!pos) pos = extract_3d_position(data, raw_path);
+        if (!pos) pos = extract_3d_position(data, topic_prefixed_no_slash);
+          
+        if (pos) {
+          joint_positions.push_back({static_cast<float>(pos->at(0)), static_cast<float>(pos->at(1)), static_cast<float>(pos->at(2))});
+        }
 
-            // Confidence: try matching paths; default to 1.0 if missing
-            auto conf = extract_confidence(data, full_path);
-            if (!conf) conf = extract_confidence(data, raw_path);
-            if (!conf) conf = extract_confidence(data, topic_prefixed_no_slash);
-            confidences.push_back(static_cast<float>(conf.value_or(1.0)));
-                
-            // Log individual joint coordinates as time series for real-time visualization
-            // Log a combined 3D scalar to reduce number of messages
-            if (_enable_timeseries) {
-              std::string joint_name = kp_path;
-              if (joint_name.front() == '/') {
-                joint_name = joint_name.substr(1);
-              }
-                  
-              try {
-                // Log X, Y, Z as separate scalar for better time series visualization
-                // Only log every frame - rate limiting handles the flow control
-                _rec->log("timeseries/skeleton/" + joint_name + "/x", rerun::Scalars(pos->at(0)));
-                _rec->log("timeseries/skeleton/" + joint_name + "/y", rerun::Scalars(pos->at(1)));
-                _rec->log("timeseries/skeleton/" + joint_name + "/z", rerun::Scalars(pos->at(2)));
-                logged = true;
-              } catch (const std::exception& e) {
-                // gRPC connection error - disable timeseries temporarily
-                _enable_timeseries = false;
-                _error = "Rerun gRPC error - disabling timeseries: " + std::string(e.what());
-                break; // Exit the loop to prevent further errors
-              }
+      }
+      
+      // Log keypoints in 3D view
+      if (_enable_keypoints && !joint_positions.empty()) {
+          try {
+            _rec->log("skeleton/keypoints", rerun::Points3D(joint_positions).with_colors(rerun::Color(255, 0, 0, 255)).with_radii({5.0f}));
+            logged = true;
+          } catch (const std::exception& e) {
+            // gRPC connection error
+            if (_frame_count % 100 == 0) {
+              _error = "Rerun gRPC error (keypoints): " + std::string(e.what());
             }
           }
-        }
-        
-        // Log keypoints in 3D view
-        if (_enable_keypoints && !positions.empty()) {
-            // Create colored points based on confidence
-            std::vector<rerun::Color> colors;
-            for (float conf : confidences) {
-                uint8_t green = static_cast<uint8_t>(conf * 255);
-                colors.push_back(rerun::Color(0, green, 0, 255));
-            }
-            
-            try {
-              _rec->log("skeleton/keypoints",
-                        rerun::Points3D(positions)
-                            .with_colors(colors)
-                            .with_radii({0.02f}));
-              logged = true;
-            } catch (const std::exception& e) {
-              // gRPC connection error
-              if (_frame_count % 100 == 0) {
-                _error = "Rerun gRPC error (keypoints): " + std::string(e.what());
+      }
+      
+      
+      // Log bones in 3D view
+      if (_enable_bones && !joint_positions.empty()) {
+          std::vector<std::vector<std::array<float, 3>>> bone_joints_positions;
+          
+          for (const auto& bone : _skeleton.bones()) {
+              if (bone.start_joint < joint_positions.size() && bone.end_joint < joint_positions.size()) {
+                bone_joints_positions.push_back({joint_positions[bone.start_joint], joint_positions[bone.end_joint]});
               }
-            }
-        }
-        
-        // Log bones in 3D view
-        if (_enable_bones && !positions.empty()) {
-            std::vector<rerun::Position3D> bone_points;
-            std::vector<rerun::Color> bone_colors;
-            std::vector<uint32_t> strip_lengths;
-            
-            for (const auto& bone : _skeleton.bones()) {
-                if (bone.start_joint < positions.size() && 
-                    bone.end_joint < positions.size() &&
-                    bone.start_joint < confidences.size() &&
-                    bone.end_joint < confidences.size()) {
-                    
-                    // Check confidence threshold
-                    if (confidences[bone.start_joint] >= _min_confidence &&
-                        confidences[bone.end_joint] >= _min_confidence) {
-                        
-                        bone_points.push_back(positions[bone.start_joint]);
-                        bone_points.push_back(positions[bone.end_joint]);
-                        
-                        // Calculate average confidence color for this bone
-                        float avg_conf = (confidences[bone.start_joint] + confidences[bone.end_joint]) / 2.0f;
-                        uint8_t red = static_cast<uint8_t>((1.0f - avg_conf) * 255);
-                        uint8_t green = static_cast<uint8_t>(avg_conf * 255);
-                        rerun::Color bone_color(red, green, 0, 255);
-                        
-                        bone_colors.push_back(bone_color);
-                        bone_colors.push_back(bone_color);
-                        strip_lengths.push_back(2);
-                    }
+          }
+          
+          if (!bone_joints_positions.empty()) {
+              try {
+                _rec->log("skeleton/bones",
+                          rerun::LineStrips3D(bone_joints_positions).with_colors(rerun::Color(255, 0, 0, 255)));
+                logged = true;
+              } catch (const std::exception& e) {
+                // gRPC connection error
+                if (_frame_count % 100 == 0) {
+                  _error = "Rerun gRPC error (bones): " + std::string(e.what());
                 }
-            }
-            
-            if (!bone_points.empty()) {
-                try {
-                  _rec->log("skeleton/bones",
-                            rerun::LineStrips3D(bone_points)
-                                .with_colors(bone_colors));
-                  logged = true;
-                } catch (const std::exception& e) {
-                  // gRPC connection error
-                  if (_frame_count % 100 == 0) {
-                    _error = "Rerun gRPC error (bones): " + std::string(e.what());
-                  }
-                }
-            }
-        }
+              }
+          }
+      }
+      
     }
 
     if (logged) {
@@ -618,8 +425,6 @@ public:
 
     _enable_bones = _params.value("enable_bones", true);
     _enable_keypoints = _params.value("enable_keypoints", true);
-    _min_confidence = _params.value("min_confidence", 0.1);
-    _use_confidence_colors = _params.value("use_confidence_colors", true);
     
     // Rate limiting configuration to prevent gRPC overload (enabled by default)
     _enable_rate_limiting = _params.value("enable_rate_limiting", true);
