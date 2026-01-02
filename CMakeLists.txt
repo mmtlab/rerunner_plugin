@@ -86,6 +86,8 @@ FetchContent_Populate(plugin
 
 include_directories(
   ${plugin_SOURCE_DIR}/src
+  ${plugin_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${rerun_sdk_SOURCE_DIR}/src
   ${threadpool_SOURCE_DIR}/include
 )

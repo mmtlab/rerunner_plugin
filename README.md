@@ -1,11 +1,19 @@
 # rerunner plugin for MADS
 
-This is a Sink plugin for [MADS](https://github.com/MADS-NET/MADS) that uses [Rerun](https://www.rerun.io/) to visualize time series data.
+This is a Sink plugin for [MADS](https://github.com/MADS-NET/MADS) that uses [Rerun](https://www.rerun.io/) to visualize **real-time time series data** from replay sessions.
 
-The plugin allows you to log time series data to Rerun, where it can be visualized as time series. It supports automatic calculation of the autocorrelation function (ACF) for specified keypaths, making it easier to analyze the temporal dependencies in your data.
+The plugin allows you to:
+- **Visualize time series data in real-time** as it's replayed
+- **Automatically compute statistics** (mean, stdev, uncertainty) for time series
+- **Analyze frequency content** with autocorrelation (ACF) and FFT functions
+- **Display pose/skeleton data** in 3D with confidence coloring
+- **Synchronize multi-modal data** across a common timeline
 
 *Required MADS version: 1.3.5 and rerun-sdk version 0.25.0*
 
+## Quick Start
+
+For detailed time series visualization setup and examples, see [TIMESERIES_GUIDE.md](TIMESERIES_GUIDE.md).
 
 ## Supported platforms
 
@@ -41,7 +49,7 @@ You need to install and run an instance of the Rerun viewer. You can download it
 
 ## Concepts
 
-The plugin plots on Rerun the data received from different topics accoring to a list of *keypaths*. Each keypath is a dot-separated string that specifies the path to a particular value in the input JSON data. For example, if the input JSON data is: 
+The plugin plots on Rerun the data received from different topics according to a list of *keypaths*. Each keypath is a dot-separated string that specifies the path to a particular value in the input JSON data. For example, if the input JSON data is: 
 
 ```json
 {
