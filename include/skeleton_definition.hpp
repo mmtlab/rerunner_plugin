@@ -12,7 +12,7 @@ namespace pose {
  * Joint indices for HPE (Human Pose Estimation) model
  * Custom 18-joint skeleton from HPE replay dataset
  */
-enum class JointIndex : uint32_t {
+enum class JointIndex : uint16_t {
     NOSE = 0,       // /NOS_
     NECK = 1,       // /NEC_
     LEFT_SHOULDER = 2,   // /SHOL
@@ -38,12 +38,12 @@ enum class JointIndex : uint32_t {
  * Defines a bone (connection) between two joints
  */
 struct Bone {
-    uint32_t start_joint;
-    uint32_t end_joint;
+    uint16_t start_joint;
+    uint16_t end_joint;
     std::string name;
     
     Bone() = default;
-    Bone(uint32_t start, uint32_t end, const std::string& bone_name)
+    Bone(uint16_t start, uint16_t end, const std::string& bone_name)
         : start_joint(start), end_joint(end), name(bone_name) {}
 };
 
@@ -64,78 +64,78 @@ public:
         skeleton.set_num_joints(18);
         
         // Head connections
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::NOSE), 
-                         static_cast<uint32_t>(JointIndex::LEFT_EYE), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::NOSE), 
+                         static_cast<uint16_t>(JointIndex::LEFT_EYE), 
                          "nose_to_left_eye");
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::NOSE), 
-                         static_cast<uint32_t>(JointIndex::RIGHT_EYE), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::NOSE), 
+                         static_cast<uint16_t>(JointIndex::RIGHT_EYE), 
                          "nose_to_right_eye");
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::LEFT_EYE), 
-                         static_cast<uint32_t>(JointIndex::LEFT_EAR), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::LEFT_EYE), 
+                         static_cast<uint16_t>(JointIndex::LEFT_EAR), 
                          "left_eye_to_left_ear");
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::RIGHT_EYE), 
-                         static_cast<uint32_t>(JointIndex::RIGHT_EAR), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::RIGHT_EYE), 
+                         static_cast<uint16_t>(JointIndex::RIGHT_EAR), 
                          "right_eye_to_right_ear");
         
         // Nose to neck
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::NOSE), 
-                         static_cast<uint32_t>(JointIndex::NECK), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::NOSE), 
+                         static_cast<uint16_t>(JointIndex::NECK), 
                          "nose_to_neck");
         
         // Neck to shoulders
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::NECK), 
-                         static_cast<uint32_t>(JointIndex::LEFT_SHOULDER), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::NECK), 
+                         static_cast<uint16_t>(JointIndex::LEFT_SHOULDER), 
                          "neck_to_left_shoulder");
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::NECK), 
-                         static_cast<uint32_t>(JointIndex::RIGHT_SHOULDER), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::NECK), 
+                         static_cast<uint16_t>(JointIndex::RIGHT_SHOULDER), 
                          "neck_to_right_shoulder");
         
         // Shoulder-to-shoulder
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::LEFT_SHOULDER), 
-                         static_cast<uint32_t>(JointIndex::RIGHT_SHOULDER), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::LEFT_SHOULDER), 
+                         static_cast<uint16_t>(JointIndex::RIGHT_SHOULDER), 
                          "left_shoulder_to_right_shoulder");
         
         // Left arm
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::LEFT_SHOULDER), 
-                         static_cast<uint32_t>(JointIndex::LEFT_ELBOW), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::LEFT_SHOULDER), 
+                         static_cast<uint16_t>(JointIndex::LEFT_ELBOW), 
                          "left_shoulder_to_left_elbow");
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::LEFT_ELBOW), 
-                         static_cast<uint32_t>(JointIndex::LEFT_WRIST), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::LEFT_ELBOW), 
+                         static_cast<uint16_t>(JointIndex::LEFT_WRIST), 
                          "left_elbow_to_left_wrist");
         
         // Right arm
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::RIGHT_SHOULDER), 
-                         static_cast<uint32_t>(JointIndex::RIGHT_ELBOW), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::RIGHT_SHOULDER), 
+                         static_cast<uint16_t>(JointIndex::RIGHT_ELBOW), 
                          "right_shoulder_to_right_elbow");
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::RIGHT_ELBOW), 
-                         static_cast<uint32_t>(JointIndex::RIGHT_WRIST), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::RIGHT_ELBOW), 
+                         static_cast<uint16_t>(JointIndex::RIGHT_WRIST), 
                          "right_elbow_to_right_wrist");
         
         // Torso
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::LEFT_SHOULDER), 
-                         static_cast<uint32_t>(JointIndex::LEFT_HIP), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::LEFT_SHOULDER), 
+                         static_cast<uint16_t>(JointIndex::LEFT_HIP), 
                          "left_shoulder_to_left_hip");
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::RIGHT_SHOULDER), 
-                         static_cast<uint32_t>(JointIndex::RIGHT_HIP), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::RIGHT_SHOULDER), 
+                         static_cast<uint16_t>(JointIndex::RIGHT_HIP), 
                          "right_shoulder_to_right_hip");
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::LEFT_HIP), 
-                         static_cast<uint32_t>(JointIndex::RIGHT_HIP), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::LEFT_HIP), 
+                         static_cast<uint16_t>(JointIndex::RIGHT_HIP), 
                          "left_hip_to_right_hip");
         
         // Left leg
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::LEFT_HIP), 
-                         static_cast<uint32_t>(JointIndex::LEFT_KNEE), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::LEFT_HIP), 
+                         static_cast<uint16_t>(JointIndex::LEFT_KNEE), 
                          "left_hip_to_left_knee");
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::LEFT_KNEE), 
-                         static_cast<uint32_t>(JointIndex::LEFT_ANKLE), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::LEFT_KNEE), 
+                         static_cast<uint16_t>(JointIndex::LEFT_ANKLE), 
                          "left_knee_to_left_ankle");
         
         // Right leg
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::RIGHT_HIP), 
-                         static_cast<uint32_t>(JointIndex::RIGHT_KNEE), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::RIGHT_HIP), 
+                         static_cast<uint16_t>(JointIndex::RIGHT_KNEE), 
                          "right_hip_to_right_knee");
-        skeleton.add_bone(static_cast<uint32_t>(JointIndex::RIGHT_KNEE), 
-                         static_cast<uint32_t>(JointIndex::RIGHT_ANKLE), 
+        skeleton.add_bone(static_cast<uint16_t>(JointIndex::RIGHT_KNEE), 
+                         static_cast<uint16_t>(JointIndex::RIGHT_ANKLE), 
                          "right_knee_to_right_ankle");
         
         return skeleton;
@@ -144,7 +144,7 @@ public:
     /**
      * Add a bone connection between two joints
      */
-    void add_bone(uint32_t start, uint32_t end, const std::string& name) {
+    void add_bone(uint16_t start, uint16_t end, const std::string& name) {
         if (start < _num_joints && end < _num_joints) {
             _bones.emplace_back(start, end, name);
         }

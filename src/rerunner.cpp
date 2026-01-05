@@ -21,9 +21,6 @@
 
 #include <pugg/Kernel.h>
 
-#include "moving_window_stats.hpp"
-#include "skeleton_definition.hpp"
-
 #include <BS_thread_pool.hpp>
 #include <array>
 #include <chrono>
@@ -31,6 +28,7 @@
 #include <deque>
 #include <filesystem>
 #include <future>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <rerun.hpp>
@@ -56,20 +54,10 @@ using json = nlohmann::json;
 class RerunnerPlugin : public Sink<json> {
 private:
   // Skeleton configuration
-  pose::SkeletonDefinition _skeleton;
   std::vector<std::string> _skeleton_keypoint_paths;
 
-  bool _enable_skeleton = false;
-  bool _enable_bones = true;
-  bool _enable_keypoints = true;
-
   std::vector<std::string> _keypaths;
-  std::vector<std::string> _acf_keypaths;
-  std::vector<std::string> _fft_keypaths;
   std::vector<std::string> _trace_keypaths;
-  MovingWindowStats _stats;
-  size_t _window_size = 1000; // Store 10x ACF width for better statistics
-  filesystem::path _blueprint;
   
   // Real-time visualization settings
   bool _enable_timeseries = true; // Automatically enable time series
@@ -160,14 +148,6 @@ private:
       return std::nullopt;
   }
 
-  // Color by confidence (red=low, green=high)
-  rerun::Color confidence_to_color(double confidence) {
-      confidence = std::max(0.0, std::min(1.0, confidence));
-      uint8_t red = static_cast<uint8_t>((1.0 - confidence) * 255);
-      uint8_t green = static_cast<uint8_t>(confidence * 255);
-      return rerun::Color(red, green, 100, 255);
-  }
-
 public:
   RerunnerPlugin() {
     _start_time = std::chrono::steady_clock::now();
@@ -228,48 +208,20 @@ public:
         _error = "Warning: Rerun timing error: " + std::string(e.what());
       }
     }
-    
-    // Debug: Log that we're processing data (only for first few frames)
-    if (n < 5) {
-      try {
-        _rec->log("debug/info", rerun::TextLog("Processing frame " + std::to_string(n) + 
-                                               " for topic: " + topic + 
-                                               " at time: " + std::to_string(time_seconds)));
-      } catch (const std::exception& e) {
-        // Ignore debug log errors
-      }
-    }
-
-    // Extract values for each keypath and send to rerun as time series
-    // Real-time visualization enabled by default
-    if (_enable_timeseries && !_keypaths.empty()) {
-      for (const auto &keypath : _keypaths) {
-        if (auto value = get_numeric_value(data, keypath)) {
-          try {
-            // Log raw data point on the timeline for real-time visualization
-            _rec->log("timeseries/" + keypath, rerun::Scalars(*value));
-            logged = true;
-          } catch (const std::exception& e) {
-            if (_frame_count % 100 == 0) {
-              _error = "Rerun gRPC error (timeseries/keypaths): " + std::string(e.what());
-            }
-          }
-        }
-      }
-    }
 
     // Log skeleton visualization if enabled
-    if (_enable_skeleton && !_skeleton_keypoint_paths.empty()) {
+    if (!_skeleton_keypoint_paths.empty()) {
       std::vector<std::array<float, 3>> joint_positions = {};
+      std::vector<uint16_t> keypoint_ids;
       
-      // Extract all keypoint positions and log coordinates as time series
+      // Extract all keypoint positions
       for (size_t i = 0; i < _skeleton_keypoint_paths.size(); ++i) {
         const auto& kp_path = _skeleton_keypoint_paths[i];
 
         // Build alternative paths to match incoming JSON keys
-        const std::string full_path = "/" + topic + kp_path;        // e.g. /topic/ANKL
-        const std::string raw_path = kp_path;                        // e.g. /ANKL
-        const std::string topic_prefixed_no_slash = topic + kp_path; // e.g. topic/ANKL
+        const std::string full_path = "/" + topic + "/" + kp_path;        // e.g. /topic/ANKL
+        const std::string raw_path = "/" + kp_path;                        // e.g. /ANKL
+        const std::string topic_prefixed_no_slash = topic + "/" + kp_path; // e.g. topic/ANKL
 
         std::optional<std::array<double, 3>> pos;
         pos = extract_3d_position(data, full_path);
@@ -278,14 +230,18 @@ public:
           
         if (pos) {
           joint_positions.push_back({static_cast<float>(pos->at(0)), static_cast<float>(pos->at(1)), static_cast<float>(pos->at(2))});
+          keypoint_ids.push_back(static_cast<uint16_t>(i));
         }
-
       }
       
-      // Log keypoints in 3D view
-      if (_enable_keypoints && !joint_positions.empty()) {
+      // Log keypoints with keypoint IDs and class ID
+      if (!joint_positions.empty()) {
           try {
-            _rec->log("skeleton/keypoints", rerun::Points3D(joint_positions).with_colors(rerun::Color(255, 0, 0, 255)).with_radii({5.0f}));
+            _rec->log("skeleton/keypoints", 
+                rerun::Points3D(joint_positions)
+                    .with_keypoint_ids(keypoint_ids)
+                    .with_class_ids({1})
+                    .with_radii({5.0f}));
             logged = true;
           } catch (const std::exception& e) {
             // gRPC connection error
@@ -294,32 +250,7 @@ public:
             }
           }
       }
-      
-      
-      // Log bones in 3D view
-      if (_enable_bones && !joint_positions.empty()) {
-          std::vector<std::vector<std::array<float, 3>>> bone_joints_positions;
-          
-          for (const auto& bone : _skeleton.bones()) {
-              if (bone.start_joint < joint_positions.size() && bone.end_joint < joint_positions.size()) {
-                bone_joints_positions.push_back({joint_positions[bone.start_joint], joint_positions[bone.end_joint]});
-              }
-          }
-          
-          if (!bone_joints_positions.empty()) {
-              try {
-                _rec->log("skeleton/bones",
-                          rerun::LineStrips3D(bone_joints_positions).with_colors(rerun::Color(255, 0, 0, 255)));
-                logged = true;
-              } catch (const std::exception& e) {
-                // gRPC connection error
-                if (_frame_count % 100 == 0) {
-                  _error = "Rerun gRPC error (bones): " + std::string(e.what());
-                }
-              }
-          }
-      }
-      
+    
     }
 
     if (logged) {
@@ -345,18 +276,10 @@ public:
 
     // provide sensible defaults for the parameters
     _params["keypaths"] = json::array();       // empty array by default
-    _params["acf_keypaths"] = json::array();   // empty array by default
-    _params["fft_keypaths"] = json::array();   // empty array by default
     _params["trace_keypaths"] = json::array(); // empty array by default
-    _params["window_size"] = 100;              // default ACF width
-    _params["time"] = "timecode";
-    _params["blueprint"] = "";
-    _params["parallelize"] = true;
 
     // then merge the defaults with the actually provided parameters
     _params.merge_patch(*(json *)params);
-    _window_size = _params.value("window_size", 200);
-    _stats.reset(_window_size);
 
     // Initialize Rerun with real-time optimized settings
     _rec = std::make_shared<rerun::RecordingStream>("MADS " + _params.value("agent_name", "rerunner (generic)"));
@@ -366,106 +289,78 @@ public:
       _rec->send_recording_name(_agent_id);
     }
 
-    _blueprint = _params.value("blueprint", "");
-    if (filesystem::exists(_blueprint)) {
-      _rec->log_file_from_path(_blueprint);
-    } else if (!_blueprint.empty()) {
-      _blueprint = _params.value("blueprint", "") + " (not found)";
-    }
+    // Auto-configure HPE 16-joint keypoint paths from CSV structure
+    // Each joint has format /JOINT_NAME/crd/X for coordinates
+    _skeleton_keypoint_paths = {
+        "NOS_",  // 0: NOSE
+        "NEC_",  // 1: NECK
+        "SHOL",  // 2: LEFT_SHOULDER
+        "SHOR",  // 3: RIGHT_SHOULDER
+        "ELBL",  // 4: LEFT_ELBOW
+        "ELBR",  // 5: RIGHT_ELBOW
+        "WRIL",  // 6: LEFT_WRIST
+        "WRIR",  // 7: RIGHT_WRIST
+        "HIPL",  // 8: LEFT_HIP
+        "HIPR",  // 9: RIGHT_HIP
+        "KNEL",  // 10: LEFT_KNEE
+        "KNER",  // 11: RIGHT_KNEE
+        "ANKL",  // 12: LEFT_ANKLE
+        "ANKR",  // 13: RIGHT_ANKLE
+        "EARL",  // 14: LEFT_EAR
+        "EARR",  // 15: RIGHT_EAR
+    };
 
-    // Load skeleton configuration
-    if (_params.contains("skeleton_type")) {
-        std::string skeleton_type = _params["skeleton_type"].get<std::string>();
-        if (skeleton_type == "hpe_18") {
-            _skeleton = pose::SkeletonDefinition::hpe_18();
-        } else {
-            // Default to HPE 18 for HPE replay datasets
-            _skeleton = pose::SkeletonDefinition::hpe_18();
-        }
-        _enable_skeleton = true;
-    } else {
-        // Default skeleton
-        _skeleton = pose::SkeletonDefinition::hpe_18();
-        _enable_skeleton = true;
-    }
+    // Define the connections (pairs of landmark indices)
+    std::vector<std::pair<uint32_t, uint32_t>> keypoint_connections = {
+        {15, 0}, {0, 14},           // head
+        {0, 1},                     // neck
+        {1, 2}, {2, 4}, {4, 6},     // Left shoulder to left wrist
+        {1, 3}, {3, 5}, {5, 7},     // Right shoulder to right wrist
+        {1, 8}, {8, 10}, {10, 12},  // Left hip to left ankle
+        {1, 9}, {9, 11}, {11, 13},  // Right hip to right ankle
+    };
 
-    // Load keypoint paths
-    _skeleton_keypoint_paths.clear();
-    if (_params.contains("skeleton_keypoint_paths") && 
-        _params["skeleton_keypoint_paths"].is_array()) {
-        for (const auto &path : _params["skeleton_keypoint_paths"]) {
-            if (path.is_string()) {
-                _skeleton_keypoint_paths.push_back(path.get<std::string>());
-            }
-        }
-    } else {
-        // Auto-configure HPE 18-joint keypoint paths from CSV structure
-        // Each joint has format /JOINT_NAME/crd/X for coordinates
-        _skeleton_keypoint_paths = {
-            "/NOS_",  // 0: NOSE
-            "/NEC_",  // 1: NECK
-            "/SHOL",  // 2: LEFT_SHOULDER
-            "/SHOR",  // 3: RIGHT_SHOULDER
-            "/ELBL",  // 4: LEFT_ELBOW
-            "/ELBR",  // 5: RIGHT_ELBOW
-            "/WRIL",  // 6: LEFT_WRIST
-            "/WRIR",  // 7: RIGHT_WRIST
-            "/HIPL",  // 8: LEFT_HIP
-            "/HIPR",  // 9: RIGHT_HIP
-            "/KNEL",  // 10: LEFT_KNEE
-            "/KNER",  // 11: RIGHT_KNEE
-            "/ANKL",  // 12: LEFT_ANKLE
-            "/ANKR",  // 13: RIGHT_ANKLE
-            "/EYEL",  // 14: LEFT_EYE
-            "/EYER",  // 15: RIGHT_EYE
-            "/EARL",  // 16: LEFT_EAR
-            "/EARR",  // 17: RIGHT_EAR (Note: CSV may have this labeled differently)
-        };
-    }
+    // Create annotation context with skeleton keypoints and connections
+    try {
+      std::vector<rerun::AnnotationInfo> annotation_infos;
+      for (uint16_t i = 0; i < _skeleton_keypoint_paths.size(); ++i) {
+        annotation_infos.push_back(
+          rerun::AnnotationInfo(i, _skeleton_keypoint_paths[i], rerun::Rgba32(255, 255, 255))
+        );
+      }
 
-    _enable_bones = _params.value("enable_bones", true);
-    _enable_keypoints = _params.value("enable_keypoints", true);
+      // Convert keypoint connections pairs to KeypointPair objects
+      std::vector<std::pair<uint16_t, uint16_t>> keypoint_pairs;
+      for (const auto& pair : keypoint_connections) {
+        keypoint_pairs.push_back({static_cast<uint16_t>(pair.first), static_cast<uint16_t>(pair.second)});
+      }
+
+      // Log the AnnotationContext with skeleton description
+      // Using log_static to ensure it's logged once
+      _rec->log_static(
+          "/skeleton",
+          rerun::AnnotationContext({rerun::ClassDescription{
+              1,
+              annotation_infos,
+              keypoint_pairs,
+          }})
+      );
+    } catch (const std::exception& e) {
+      // Log warning but don't fail initialization
+      std::cerr << "Warning: Failed to log skeleton annotation context: " << e.what() << std::endl;
+    }
     
-    // Rate limiting configuration to prevent gRPC overload (enabled by default)
+    // Configure rate limiting to prevent gRPC overload (enabled by default)
     _enable_rate_limiting = _params.value("enable_rate_limiting", true);
     int frame_delay_us = _params.value("frame_delay_microseconds", 5000); // 5ms default
     _min_frame_delay = std::chrono::microseconds(frame_delay_us);
-    
-    // Real-time time series visualization (enabled by default)
-    _enable_timeseries = _params.value("enable_timeseries", true);
 
-    // Load the keypaths configuration
+    // Load the keypaths configuration for time series
     _keypaths.clear();
     if (_params.contains("keypaths") && _params["keypaths"].is_array()) {
       for (const auto &path : _params["keypaths"]) {
         if (path.is_string()) {
           _keypaths.push_back(path.get<std::string>());
-        }
-      }
-    }
-
-    // Load ACF configuration
-    _acf_keypaths.clear();
-    if (_params.contains("acf_keypaths") &&
-        _params["acf_keypaths"].is_array()) {
-      for (const auto &path : _params["acf_keypaths"]) {
-        if (path.is_string()) {
-          _acf_keypaths.push_back(path.get<std::string>());
-          // Initialize buffer for this keypath
-          // _signal_buffers[path.get<std::string>()];
-        }
-      }
-    }
-
-    // Load FFT configuration
-    _fft_keypaths.clear();
-    if (_params.contains("fft_keypaths") &&
-        _params["fft_keypaths"].is_array()) {
-      for (const auto &path : _params["fft_keypaths"]) {
-        if (path.is_string()) {
-          _fft_keypaths.push_back(path.get<std::string>());
-          // Initialize buffer for this keypath
-          // _signal_buffers[path.get<std::string>()];
         }
       }
     }
@@ -477,8 +372,6 @@ public:
       for (const auto &path : _params["trace_keypaths"]) {
         if (path.is_string()) {
           _trace_keypaths.push_back(path.get<std::string>());
-          // Initialize buffer for this keypath
-          // _signal_buffers[path.get<std::string>()];
         }
       }
     }
@@ -491,18 +384,12 @@ public:
     // by the agent
 
     return {{"Rerun version", rerun::version_string()},
-            {"Window size", std::to_string(_window_size)},
-            {"ACF Keypaths",
-             _acf_keypaths.empty() ? "None" : json(_acf_keypaths).dump()},
-            {"FFT Keypaths",
-             _fft_keypaths.empty() ? "None" : json(_fft_keypaths).dump()},
             {"Trace Keypaths",
              _trace_keypaths.empty() ? "None" : json(_trace_keypaths).dump()},
             {"Keypaths", _keypaths.empty() ? "None" : json(_keypaths).dump()},
             {"Time column", _params["time"].get<string>().empty()
                                 ? "timecode"
                                 : _params["time"].get<std::string>()},
-            {"Blueprint", (_blueprint.empty() ? "None" : _blueprint.string())},
             {"Parallelize", _params["parallelize"].get<bool>() ? to_string(_pool.get_thread_count()) + " threads" : "NO"}
           };
   };
