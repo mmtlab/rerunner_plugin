@@ -57,13 +57,36 @@ private:
   std::vector<std::string> _skeleton_keypoint_paths;
 
   std::vector<std::string> _keypaths;
-  std::vector<std::string> _trace_keypaths;
   
   // Real-time visualization settings
   bool _enable_timeseries = true; // Automatically enable time series
 
   std::chrono::steady_clock::time_point _start_time;
   std::shared_ptr<rerun::RecordingStream> _rec;
+  
+  // Multi-skeleton tracking
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> _skeleton_last_update;
+  std::unordered_map<std::string, rerun::Color> _skeleton_colors;
+  static constexpr double SKELETON_TIMEOUT_SECONDS = 0.5;
+
+  // Helper: Generate a consistent color from skeleton ID
+  rerun::Color generate_skeleton_color(const std::string& skeleton_id) {
+    // Use hash of skeleton_id to generate consistent color
+    std::hash<std::string> hasher;
+    size_t hash_value = hasher(skeleton_id);
+    
+    // Use different bits of hash for R, G, B to get varied colors
+    uint8_t r = static_cast<uint8_t>((hash_value >> 0) & 0xFF);
+    uint8_t g = static_cast<uint8_t>((hash_value >> 8) & 0xFF);
+    uint8_t b = static_cast<uint8_t>((hash_value >> 16) & 0xFF);
+    
+    // Ensure color is not too dark (avoid black or very dark colors)
+    r = std::max(r, static_cast<uint8_t>(80));
+    g = std::max(g, static_cast<uint8_t>(80));
+    b = std::max(b, static_cast<uint8_t>(80));
+    
+    return rerun::Color(r, g, b);
+  }
 
   BS::thread_pool<BS::tp::none> _pool;
   vector<future<bool>> _futures;
@@ -186,6 +209,16 @@ public:
     // keep a copy (no move) so we can attempt alternative lookup paths
     json data = json{{topic, input}};
     
+    // Extract agent_id from input (tracker identifier)
+    // If not present, use the plugin's agent_id
+    std::string agent_id = _agent_id;
+    if (input.contains("agent_id")) {
+      agent_id = input["agent_id"].get<std::string>();
+    }
+    
+    // Update last update timestamp for this skeleton
+    _skeleton_last_update[agent_id] = now;
+    
     // Rate limiting: prevent flooding gRPC connection
     if (_enable_rate_limiting && _frame_count > 0) {
       auto now_time = std::chrono::steady_clock::now();
@@ -234,14 +267,27 @@ public:
         }
       }
       
-      // Log keypoints with keypoint IDs and class ID
+      // Log keypoints with keypoint IDs and class ID only if skeleton is recently updated
       if (!joint_positions.empty()) {
+        // Check if skeleton is still active (updated within timeout)
+        auto time_since_update = std::chrono::duration<double>(now - _skeleton_last_update[agent_id]).count();
+        
+        if (time_since_update <= SKELETON_TIMEOUT_SECONDS) {
           try {
-            _rec->log("skeleton/keypoints", 
+            // Assign color to skeleton if not already assigned
+            if (_skeleton_colors.find(agent_id) == _skeleton_colors.end()) {
+              _skeleton_colors[agent_id] = generate_skeleton_color(agent_id);
+            }
+            
+            // Use agent_id in the path to separate different skeletons
+            std::string skeleton_path = "skeletons/" + agent_id + "/keypoints";
+            _rec->log(skeleton_path, 
                 rerun::Points3D(joint_positions)
                     .with_keypoint_ids(keypoint_ids)
                     .with_class_ids({1})
-                    .with_radii({5.0f}));
+                    .with_colors(_skeleton_colors[agent_id])
+                    .with_radii({15.0f})
+                    .with_show_labels(false));
             logged = true;
           } catch (const std::exception& e) {
             // gRPC connection error
@@ -249,6 +295,7 @@ public:
               _error = "Rerun gRPC error (keypoints): " + std::string(e.what());
             }
           }
+        }
       }
     
     }
@@ -263,7 +310,7 @@ public:
       
       return return_type::success;
     } else {
-      // No data was logged - this could indicate a configuration issue
+      // No data was logged - this could indicate a configuration issue, but continue execution
       _frame_count++;
       return return_type::success;
     }
@@ -276,7 +323,6 @@ public:
 
     // provide sensible defaults for the parameters
     _params["keypaths"] = json::array();       // empty array by default
-    _params["trace_keypaths"] = json::array(); // empty array by default
 
     // then merge the defaults with the actually provided parameters
     _params.merge_patch(*(json *)params);
@@ -336,9 +382,9 @@ public:
       }
 
       // Log the AnnotationContext with skeleton description
-      // Using log_static to ensure it's logged once
+      // Using log_static to ensure it's logged once for all skeletons
       _rec->log_static(
-          "/skeleton",
+          "/skeletons",
           rerun::AnnotationContext({rerun::ClassDescription{
               1,
               annotation_infos,
@@ -352,7 +398,7 @@ public:
     
     // Configure rate limiting to prevent gRPC overload (enabled by default)
     _enable_rate_limiting = _params.value("enable_rate_limiting", true);
-    int frame_delay_us = _params.value("frame_delay_microseconds", 5000); // 5ms default
+    int frame_delay_us = _params.value("frame_delay_microseconds", 10000); // 10ms default
     _min_frame_delay = std::chrono::microseconds(frame_delay_us);
 
     // Load the keypaths configuration for time series
@@ -361,17 +407,6 @@ public:
       for (const auto &path : _params["keypaths"]) {
         if (path.is_string()) {
           _keypaths.push_back(path.get<std::string>());
-        }
-      }
-    }
-
-    // Load trace configuration
-    _trace_keypaths.clear();
-    if (_params.contains("trace_keypaths") &&
-        _params["trace_keypaths"].is_array()) {
-      for (const auto &path : _params["trace_keypaths"]) {
-        if (path.is_string()) {
-          _trace_keypaths.push_back(path.get<std::string>());
         }
       }
     }
@@ -384,13 +419,10 @@ public:
     // by the agent
 
     return {{"Rerun version", rerun::version_string()},
-            {"Trace Keypaths",
-             _trace_keypaths.empty() ? "None" : json(_trace_keypaths).dump()},
             {"Keypaths", _keypaths.empty() ? "None" : json(_keypaths).dump()},
             {"Time column", _params["time"].get<string>().empty()
                                 ? "timecode"
-                                : _params["time"].get<std::string>()},
-            {"Parallelize", _params["parallelize"].get<bool>() ? to_string(_pool.get_thread_count()) + " threads" : "NO"}
+                                : _params["time"].get<std::string>()}
           };
   };
 };
