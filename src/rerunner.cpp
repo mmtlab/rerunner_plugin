@@ -55,19 +55,21 @@ class RerunnerPlugin : public Sink<json> {
 private:
   // Skeleton configuration
   std::vector<std::string> _skeleton_keypoint_paths;
-
   std::vector<std::string> _keypaths;
   
   // Real-time visualization settings
-  bool _enable_timeseries = true; // Automatically enable time series
-
-  std::chrono::steady_clock::time_point _start_time;
   std::shared_ptr<rerun::RecordingStream> _rec;
   
   // Multi-skeleton tracking
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> _skeleton_last_update;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> _skeleton_last_view_update;
   std::unordered_map<std::string, rerun::Color> _skeleton_colors;
   static constexpr double SKELETON_TIMEOUT_SECONDS = 0.5;
+
+  
+  // Rate limiting to prevent gRPC overload
+  bool _enable_rate_limiting = true;
+  std::chrono::microseconds _min_period_update{10000}; // 10ms default to prevent overload
 
   // Helper: Generate a consistent color from skeleton ID
   rerun::Color generate_skeleton_color(const std::string& skeleton_id) {
@@ -88,14 +90,7 @@ private:
     return rerun::Color(r, g, b);
   }
 
-  BS::thread_pool<BS::tp::none> _pool;
-  vector<future<bool>> _futures;
   
-  // Rate limiting to prevent gRPC overload
-  size_t _frame_count = 0;
-  bool _enable_rate_limiting = true;
-  std::chrono::microseconds _min_frame_delay{5000}; // 5ms default to prevent overload
-  std::chrono::steady_clock::time_point _last_frame_time;
 
   // Helper function to convert dot notation path to JSON value
   json::json_pointer dot_to_pointer(const std::string &dot_path) {
@@ -172,42 +167,23 @@ private:
   }
 
 public:
-  RerunnerPlugin() {
-    _start_time = std::chrono::steady_clock::now();
-    _last_frame_time = _start_time;
-    _frame_count = 0;
-  }
+  RerunnerPlugin() {}
 
   // Typically, no need to change this
   string kind() override { return PLUGIN_NAME; }
 
   // Implement the actual functionality here
   return_type load_data(json const &input, string topic = "") override {
-    static double prev_time = 0;
-    static double mean_dt = 0;
-    static size_t n = 0;
-    double dt = 0;
-    bool logged = false;
+
     if (topic.empty()) {
-      _error = "No topic specified in plugin load_data()";
       return return_type::error;
     }
-
-    auto now = std::chrono::steady_clock::now();
-    double time_seconds;
-    // get the timecode from the input json if available, otherwise use elapsed
-    // time
-    if (!_params["time"].empty() && input.contains(_params["time"])) {
-      time_seconds = input[_params["time"]].get<double>();
-    } else {
-      time_seconds = std::chrono::duration<double>(now - _start_time).count();
-    }
-
-    dt = time_seconds - prev_time;
 
     // embed the input json within a parent object named as the topic
     // keep a copy (no move) so we can attempt alternative lookup paths
     json data = json{{topic, input}};
+
+    // TODO: if data contains the "message" field, extract it and use as new data
     
     // Extract agent_id from input (tracker identifier)
     // If not present, use the plugin's agent_id
@@ -216,104 +192,86 @@ public:
       agent_id = input["agent_id"].get<std::string>();
     }
     
-    // Update last update timestamp for this skeleton
-    _skeleton_last_update[agent_id] = now;
+    // get the timestamp from the "ts" field in the input json (IT MUST BE PRESENT)
+    uint64_t time_nanoseconds = input["ts"].get<uint64_t>();
+
+    // Update last update timestamp for this skeleton (used for timeout)
+    auto prev_skeleton_last_update = _skeleton_last_update[agent_id];
+    _skeleton_last_update[agent_id] =  std::chrono::steady_clock::time_point(std::chrono::nanoseconds(time_nanoseconds));
     
-    // Rate limiting: prevent flooding gRPC connection
-    if (_enable_rate_limiting && _frame_count > 0) {
-      auto now_time = std::chrono::steady_clock::now();
-      auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now_time - _last_frame_time);
-      if (elapsed < _min_frame_delay) {
-        std::this_thread::sleep_for(_min_frame_delay - elapsed);
+    // Continue if _enable_rate_limiting is true and enough time has not passed since last frame
+    // or if _enable_rate_limiting is false, skip the rate limiting
+    if (_enable_rate_limiting) {
+
+      // Check time since last view update for this skeleton and skip if too soon
+      auto time_since_last_view_update = std::chrono::duration_cast<std::chrono::microseconds>(_skeleton_last_update[agent_id] - _skeleton_last_view_update[agent_id]);
+      if (time_since_last_view_update < _min_period_update) {
+        return return_type::success; // Skip this frame
       }
-      _last_frame_time = std::chrono::steady_clock::now();
-    } else if (_frame_count == 0) {
-      _last_frame_time = std::chrono::steady_clock::now();
+
+      // Check if skeleton is still active (updated within timeout)
+      auto time_since_update = std::chrono::duration<double>(prev_skeleton_last_update - _skeleton_last_update[agent_id]).count();
+      if (time_since_update >= SKELETON_TIMEOUT_SECONDS) {
+        return return_type::success;
+      }
+
     }
     
+    // if we reach here, we will process this frame, so update the last view update time
+    _skeleton_last_view_update[agent_id] = _skeleton_last_update[agent_id];
+
     // Set the current time for this batch of data
     // This is crucial for time series visualization - all subsequent logs will use this timestamp
-    try {
-      _rec->set_time_seconds("time", time_seconds);
-    } catch (const std::exception& e) {
-      // Silently handle timing errors - don't fail the entire frame
-      if (_frame_count % 100 == 0) {
-        _error = "Warning: Rerun timing error: " + std::string(e.what());
-      }
-    }
+    _rec->set_time_seconds("time", _skeleton_last_view_update[agent_id].time_since_epoch().count() / 1e9);
+    
 
     // Log skeleton visualization if enabled
-    if (!_skeleton_keypoint_paths.empty()) {
-      std::vector<std::array<float, 3>> joint_positions = {};
-      std::vector<uint16_t> keypoint_ids;
-      
-      // Extract all keypoint positions
-      for (size_t i = 0; i < _skeleton_keypoint_paths.size(); ++i) {
-        const auto& kp_path = _skeleton_keypoint_paths[i];
-
-        // Build alternative paths to match incoming JSON keys
-        const std::string full_path = "/" + topic + "/" + kp_path;        // e.g. /topic/ANKL
-        const std::string raw_path = "/" + kp_path;                        // e.g. /ANKL
-        const std::string topic_prefixed_no_slash = topic + "/" + kp_path; // e.g. topic/ANKL
-
-        std::optional<std::array<double, 3>> pos;
-        pos = extract_3d_position(data, full_path);
-        if (!pos) pos = extract_3d_position(data, raw_path);
-        if (!pos) pos = extract_3d_position(data, topic_prefixed_no_slash);
-          
-        if (pos) {
-          joint_positions.push_back({static_cast<float>(pos->at(0)), static_cast<float>(pos->at(1)), static_cast<float>(pos->at(2))});
-          keypoint_ids.push_back(static_cast<uint16_t>(i));
-        }
-      }
-      
-      // Log keypoints with keypoint IDs and class ID only if skeleton is recently updated
-      if (!joint_positions.empty()) {
-        // Check if skeleton is still active (updated within timeout)
-        auto time_since_update = std::chrono::duration<double>(now - _skeleton_last_update[agent_id]).count();
-        
-        if (time_since_update <= SKELETON_TIMEOUT_SECONDS) {
-          try {
-            // Assign color to skeleton if not already assigned
-            if (_skeleton_colors.find(agent_id) == _skeleton_colors.end()) {
-              _skeleton_colors[agent_id] = generate_skeleton_color(agent_id);
-            }
-            
-            // Use agent_id in the path to separate different skeletons
-            std::string skeleton_path = "skeletons/" + agent_id + "/keypoints";
-            _rec->log(skeleton_path, 
-                rerun::Points3D(joint_positions)
-                    .with_keypoint_ids(keypoint_ids)
-                    .with_class_ids({1})
-                    .with_colors(_skeleton_colors[agent_id])
-                    .with_radii({15.0f})
-                    .with_show_labels(false));
-            logged = true;
-          } catch (const std::exception& e) {
-            // gRPC connection error
-            if (_frame_count % 100 == 0) {
-              _error = "Rerun gRPC error (keypoints): " + std::string(e.what());
-            }
-          }
-        }
-      }
+    std::vector<std::array<float, 3>> joint_positions = {};
+    std::vector<uint16_t> keypoint_ids;
     
+    // Extract all keypoint positions
+    for (size_t i = 0; i < _skeleton_keypoint_paths.size(); ++i) {
+      const auto& kp_path = _skeleton_keypoint_paths[i];
+
+      // Build alternative paths to match incoming JSON keys
+      const std::string full_path = "/" + topic + "/" + kp_path;        // e.g. /topic/ANKL
+      const std::string raw_path = "/" + kp_path;                        // e.g. /ANKL
+      const std::string topic_prefixed_no_slash = topic + "/" + kp_path; // e.g. topic/ANKL
+
+      std::optional<std::array<double, 3>> pos;
+      pos = extract_3d_position(data, full_path);
+      if (!pos) pos = extract_3d_position(data, raw_path);
+      if (!pos) pos = extract_3d_position(data, topic_prefixed_no_slash);
+        
+      if (pos) {
+        joint_positions.push_back({static_cast<float>(pos->at(0)), static_cast<float>(pos->at(1)), static_cast<float>(pos->at(2))});
+        keypoint_ids.push_back(static_cast<uint16_t>(i));
+      }
+    }
+    
+    // Log keypoints with keypoint IDs and class ID only if skeleton is recently updated
+    if (!joint_positions.empty()) {
+
+      try {
+        // Assign color to skeleton if not already assigned
+        if (_skeleton_colors.find(agent_id) == _skeleton_colors.end()) {
+          _skeleton_colors[agent_id] = generate_skeleton_color(agent_id);
+        }
+        
+        // Use agent_id in the path to separate different skeletons
+        std::string skeleton_path = "skeletons/" + agent_id;
+        _rec->log(skeleton_path, 
+            rerun::Points3D(joint_positions)
+                .with_keypoint_ids(keypoint_ids)
+                .with_class_ids({1})
+                .with_colors(_skeleton_colors[agent_id])
+                .with_radii({15.0f})
+                .with_show_labels(false));
+      } catch (const std::exception& e) {}
+      
     }
 
-    if (logged) {
-      prev_time = time_seconds;
-      n++;
-      _frame_count++;
-      
-      // Ensure data is flushed to Rerun (helps with real-time visualization)
-      // Note: This may slow down processing but ensures data is sent
-      
-      return return_type::success;
-    } else {
-      // No data was logged - this could indicate a configuration issue, but continue execution
-      _frame_count++;
-      return return_type::success;
-    }
+    return return_type::success;
   }
 
   void set_params(void const *params) override {
@@ -323,6 +281,9 @@ public:
 
     // provide sensible defaults for the parameters
     _params["keypaths"] = json::array();       // empty array by default
+
+    // Configure rate limiting to prevent gRPC overload (enabled by default)
+    _enable_rate_limiting = _params.value("enable_rate_limiting", true);
 
     // then merge the defaults with the actually provided parameters
     _params.merge_patch(*(json *)params);
@@ -396,10 +357,7 @@ public:
       std::cerr << "Warning: Failed to log skeleton annotation context: " << e.what() << std::endl;
     }
     
-    // Configure rate limiting to prevent gRPC overload (enabled by default)
-    _enable_rate_limiting = _params.value("enable_rate_limiting", true);
-    int frame_delay_us = _params.value("frame_delay_microseconds", 10000); // 10ms default
-    _min_frame_delay = std::chrono::microseconds(frame_delay_us);
+    
 
     // Load the keypaths configuration for time series
     _keypaths.clear();
@@ -420,9 +378,8 @@ public:
 
     return {{"Rerun version", rerun::version_string()},
             {"Keypaths", _keypaths.empty() ? "None" : json(_keypaths).dump()},
-            {"Time column", _params["time"].get<string>().empty()
-                                ? "timecode"
-                                : _params["time"].get<std::string>()}
+            {"Rate limiting",
+             _enable_rate_limiting ? "Enabled" : "Disabled"}
           };
   };
 };
