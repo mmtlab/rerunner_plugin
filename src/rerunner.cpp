@@ -64,12 +64,10 @@ private:
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> _skeleton_last_update;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> _skeleton_last_view_update;
   std::unordered_map<std::string, rerun::Color> _skeleton_colors;
-  static constexpr double SKELETON_TIMEOUT_SECONDS = 0.5;
 
-  
   // Rate limiting to prevent gRPC overload
   bool _enable_rate_limiting = true;
-  std::chrono::microseconds _min_period_update{10000}; // 10ms default to prevent overload
+  std::chrono::microseconds _min_period_update{100000}; // 100ms default to prevent overload
 
   // Helper: Generate a consistent color from skeleton ID
   rerun::Color generate_skeleton_color(const std::string& skeleton_id) {
@@ -206,24 +204,9 @@ public:
       // Check time since last view update for this skeleton and skip if too soon
       auto time_since_last_view_update = std::chrono::duration_cast<std::chrono::microseconds>(_skeleton_last_update[agent_id] - _skeleton_last_view_update[agent_id]);
       if (time_since_last_view_update < _min_period_update) {
-        return return_type::success; // Skip this frame
-      }
-
-      // Check if skeleton is still active (updated within timeout)
-      auto time_since_update = std::chrono::duration<double>(prev_skeleton_last_update - _skeleton_last_update[agent_id]).count();
-      if (time_since_update >= SKELETON_TIMEOUT_SECONDS) {
         return return_type::success;
       }
-
     }
-    
-    // if we reach here, we will process this frame, so update the last view update time
-    _skeleton_last_view_update[agent_id] = _skeleton_last_update[agent_id];
-
-    // Set the current time for this batch of data
-    // This is crucial for time series visualization - all subsequent logs will use this timestamp
-    _rec->set_time_seconds("time", _skeleton_last_view_update[agent_id].time_since_epoch().count() / 1e9);
-    
 
     // Log skeleton visualization if enabled
     std::vector<std::array<float, 3>> joint_positions = {};
@@ -270,6 +253,13 @@ public:
       } catch (const std::exception& e) {}
       
     }
+
+    // if we reach here, we will process this frame, so update the last view update time
+    _skeleton_last_view_update[agent_id] = _skeleton_last_update[agent_id];
+
+    // Set the current time for this batch of data
+    // This is crucial for time series visualization - all subsequent logs will use this timestamp
+    _rec->set_time_seconds("time", _skeleton_last_view_update[agent_id].time_since_epoch().count() / 1e9);
 
     return return_type::success;
   }
