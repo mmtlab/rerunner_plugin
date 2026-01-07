@@ -187,7 +187,13 @@ public:
     // If not present, use the plugin's agent_id
     std::string agent_id = _agent_id;
     if (input.contains("agent_id")) {
-      agent_id = input["agent_id"].get<std::string>();
+      if (input["agent_id"].get<std::string>() != "")
+        agent_id = input["agent_id"].get<std::string>();
+      else{
+        if (input.contains("typ")) {
+          agent_id = input["typ"].get<std::string>();
+        }
+      }
     }
     
     // get the timestamp from the "ts" field in the input json (IT MUST BE PRESENT)
@@ -282,9 +288,9 @@ public:
     _rec = std::make_shared<rerun::RecordingStream>("MADS " + _params.value("agent_name", "rerunner (generic)"));
     _rec->spawn().exit_on_failure();
 
-    if (!_agent_id.empty()) {
-      _rec->send_recording_name(_agent_id);
-    }
+    _agent_id = "FSD";
+    _rec->send_recording_name(_agent_id);
+    
 
     // Auto-configure HPE 16-joint keypoint paths from CSV structure
     // Each joint has format /JOINT_NAME/crd/X for coordinates
