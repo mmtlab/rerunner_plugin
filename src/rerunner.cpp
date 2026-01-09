@@ -148,6 +148,7 @@ private:
   // Helper: Extract 3D position from JSON keypath
   // Supports both /path/x, /path/y, /path/z AND /path/crd/0, /path/crd/1, /path/crd/2
   std::optional<std::array<double, 3>> extract_3d_position(const json &data, const std::string &keypath) {
+
       // Try new format first: /JOINT/crd/0, /JOINT/crd/1, /JOINT/crd/2
       auto x_val = get_numeric_value(data, keypath + "/crd/0");
       auto y_val = get_numeric_value(data, keypath + "/crd/1");
@@ -157,7 +158,7 @@ private:
       if (!x_val) x_val = get_numeric_value(data, keypath + "/x");
       if (!y_val) y_val = get_numeric_value(data, keypath + "/y");
       if (!z_val) z_val = get_numeric_value(data, keypath + "/z");
-      
+
       if (x_val && y_val && z_val) {
           return std::array<double, 3>{*x_val, *y_val, *z_val};
       }
@@ -177,27 +178,36 @@ public:
       return return_type::error;
     }
 
-    // embed the input json within a parent object named as the topic
-    // keep a copy (no move) so we can attempt alternative lookup paths
-    json data = json{{topic, input}};
-
-    // TODO: if data contains the "message" field, extract it and use as new data
+    // Check if input has a "message" field and use it as the actual data
+    json data_to_process = input;
+    if (input.contains("message") && input["message"].is_object()) {
+      data_to_process = input["message"];
+    }
     
     // Extract agent_id from input (tracker identifier)
     // If not present, use the plugin's agent_id
-    std::string agent_id = _agent_id;
-    if (input.contains("agent_id")) {
-      if (input["agent_id"].get<std::string>() != "")
-        agent_id = input["agent_id"].get<std::string>();
-      else{
-        if (input.contains("typ")) {
-          agent_id = input["typ"].get<std::string>();
+    std::string agent_id = "NA";
+    if (data_to_process.contains("agent_id")) {
+
+      if (data_to_process["agent_id"].is_number()) {
+        // Converti il numero a intero e poi a stringa per rimuovere i decimali
+        int64_t agent_id_num = data_to_process["agent_id"].get<int64_t>();
+        agent_id = std::to_string(agent_id_num);
+      }
+      else if (data_to_process["agent_id"].is_string()){
+        if (data_to_process["agent_id"].get<std::string>() != ""){
+          agent_id = data_to_process["agent_id"].get<std::string>();
+        }
+        else{
+          if (data_to_process.contains("typ")) {
+            agent_id = data_to_process["typ"].get<std::string>();
+          }
         }
       }
     }
     
     // get the timestamp from the "ts" field in the input json (IT MUST BE PRESENT)
-    uint64_t time_nanoseconds = input["ts"].get<uint64_t>();
+    uint64_t time_nanoseconds = data_to_process["ts"].get<uint64_t>();
 
     // Update last update timestamp for this skeleton (used for timeout)
     auto prev_skeleton_last_update = _skeleton_last_update[agent_id];
@@ -220,21 +230,18 @@ public:
     
     // Extract all keypoint positions
     for (size_t i = 0; i < _skeleton_keypoint_paths.size(); ++i) {
-      const auto& kp_path = _skeleton_keypoint_paths[i];
 
-      // Build alternative paths to match incoming JSON keys
-      const std::string full_path = "/" + topic + "/" + kp_path;        // e.g. /topic/ANKL
-      const std::string raw_path = "/" + kp_path;                        // e.g. /ANKL
-      const std::string topic_prefixed_no_slash = topic + "/" + kp_path; // e.g. topic/ANKL
-
-      std::optional<std::array<double, 3>> pos;
-      pos = extract_3d_position(data, full_path);
-      if (!pos) pos = extract_3d_position(data, raw_path);
-      if (!pos) pos = extract_3d_position(data, topic_prefixed_no_slash);
-        
-      if (pos) {
-        joint_positions.push_back({static_cast<float>(pos->at(0)), static_cast<float>(pos->at(1)), static_cast<float>(pos->at(2))});
-        keypoint_ids.push_back(static_cast<uint16_t>(i));
+      try {
+        // Get the keypoint path and extract 3D position
+        const auto& kp_path =  "/" + _skeleton_keypoint_paths[i];
+        std::optional<std::array<double, 3>> pos = extract_3d_position(data_to_process, kp_path);
+          
+        if (pos) {
+          joint_positions.push_back({static_cast<float>(pos->at(0)), static_cast<float>(pos->at(1)), static_cast<float>(pos->at(2))});
+          keypoint_ids.push_back(static_cast<uint16_t>(i));
+        }
+      } catch (const std::exception& e) {
+        // continue processing
       }
     }
     
@@ -256,7 +263,11 @@ public:
                 .with_colors(_skeleton_colors[agent_id])
                 .with_radii({15.0f})
                 .with_show_labels(false));
-      } catch (const std::exception& e) {}
+      } catch (const std::exception& e) {
+
+        // Log warning but continue processing
+        std::cerr << "Warning: Failed to log skeleton for agent_id " << agent_id << ": " << e.what() << std::endl;
+      }
       
     }
 
