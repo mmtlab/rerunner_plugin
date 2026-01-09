@@ -322,16 +322,18 @@ public:
         "ANKR",  // 13: RIGHT_ANKLE
         "EARL",  // 14: LEFT_EAR
         "EARR",  // 15: RIGHT_EAR
+        "EYEL",  // 16: LEFT_EYE
+        "EYER",  // 17: RIGHT_EYE
     };
 
     // Define the connections (pairs of landmark indices)
     std::vector<std::pair<uint32_t, uint32_t>> keypoint_connections = {
-        {15, 0}, {0, 14},           // head
-        {0, 1},                     // neck
-        {1, 2}, {2, 4}, {4, 6},     // Left shoulder to left wrist
-        {1, 3}, {3, 5}, {5, 7},     // Right shoulder to right wrist
-        {1, 8}, {8, 10}, {10, 12},  // Left hip to left ankle
-        {1, 9}, {9, 11}, {11, 13},  // Right hip to right ankle
+        {15, 17}, {17, 0}, {0, 16}, {16, 14},           // head
+        {0, 1},                                         // neck
+        {1, 2}, {2, 4}, {4, 6},                         // Left shoulder to left wrist
+        {1, 3}, {3, 5}, {5, 7},                         // Right shoulder to right wrist
+        {1, 8}, {8, 10}, {10, 12},                      // Left hip to left ankle
+        {1, 9}, {9, 11}, {11, 13},                      // Right hip to right ankle
     };
 
     // Create annotation context with skeleton keypoints and connections
