@@ -67,7 +67,7 @@ private:
 
   // Rate limiting to prevent gRPC overload
   bool _enable_rate_limiting = true;
-  std::chrono::microseconds _min_period_update{100000}; // 100ms default to prevent overload
+  std::chrono::microseconds _min_period_update{20000}; // 20ms default to prevent overload
 
   // Helper: Generate a consistent color from skeleton ID
   rerun::Color generate_skeleton_color(const std::string& skeleton_id) {
@@ -133,14 +133,11 @@ private:
                                           const std::string &dot_path) {
     json::json_pointer ptr = dot_to_pointer(dot_path);
 
-    try {
-      const auto &value = j[ptr];
+    // Use `.at(ptr)` so missing/invalid paths throw instead of being swallowed
+    const auto &value = j.at(ptr);
 
-      if (value.is_number()) {
-        return value.get<double>();
-      }
-    } catch (const json::exception &e) {
-      // Path doesn't exist or other JSON error
+    if (value.is_number_float() || value.is_number_integer() || value.is_number_unsigned()) {
+      return value.get<double>();
     }
     return std::nullopt;
   }
@@ -149,20 +146,29 @@ private:
   // Supports both /path/x, /path/y, /path/z AND /path/crd/0, /path/crd/1, /path/crd/2
   std::optional<std::array<double, 3>> extract_3d_position(const json &data, const std::string &keypath) {
 
-      // Try new format first: /JOINT/crd/0, /JOINT/crd/1, /JOINT/crd/2
-      auto x_val = get_numeric_value(data, keypath + "/crd/0");
-      auto y_val = get_numeric_value(data, keypath + "/crd/1");
-      auto z_val = get_numeric_value(data, keypath + "/crd/2");
-      
-      // Fall back to old format: /path/x, /path/y, /path/z
-      if (!x_val) x_val = get_numeric_value(data, keypath + "/x");
-      if (!y_val) y_val = get_numeric_value(data, keypath + "/y");
-      if (!z_val) z_val = get_numeric_value(data, keypath + "/z");
+      try {
+        //std::cout << "Extracting position for keypath: " << keypath << std::endl;
 
-      if (x_val && y_val && z_val) {
-          return std::array<double, 3>{*x_val, *y_val, *z_val};
+        // Try new format first: /JOINT/crd/0, /JOINT/crd/1, /JOINT/crd/2
+        auto x_val = get_numeric_value(data, keypath + "/crd/0");
+        auto y_val = get_numeric_value(data, keypath + "/crd/1");
+        auto z_val = get_numeric_value(data, keypath + "/crd/2");
+
+        /*
+        std::cout << "Extracted position for " << keypath << ": "
+                  << (x_val ? std::to_string(*x_val) : "null") << ", "
+                  << (y_val ? std::to_string(*y_val) : "null") << ", "
+                  << (z_val ? std::to_string(*z_val) : "null") << std::endl;
+        */
+
+        if (x_val && y_val && z_val) {
+            return std::array<double, 3>{*x_val, *y_val, *z_val};
+        }
+        return std::nullopt;
       }
-      return std::nullopt;
+      catch (const std::exception &e) {
+        return std::nullopt;
+      }
   }
 
 public:
@@ -183,6 +189,7 @@ public:
     if (input.contains("message") && input["message"].is_object()) {
       data_to_process = input["message"];
     }
+
     
     // Extract agent_id from input (tracker identifier)
     // If not present, use the plugin's agent_id
@@ -205,6 +212,9 @@ public:
         }
       }
     }
+    else if (data_to_process.contains("typ")) {
+      agent_id = data_to_process["typ"].get<std::string>();
+    }
     
     // get the timestamp from the "ts" field in the input json (IT MUST BE PRESENT)
     uint64_t time_nanoseconds = data_to_process["ts"].get<uint64_t>();
@@ -224,9 +234,18 @@ public:
       }
     }
 
+    // Stamp time for this frame before logging
+    _rec->set_time_seconds("time", static_cast<double>(time_nanoseconds) / 1e9);
+
     // Log skeleton visualization if enabled
     std::vector<std::array<float, 3>> joint_positions = {};
     std::vector<uint16_t> keypoint_ids;
+
+    // Check if input has a "message" field and use it as the actual data
+    json data_joints = input;
+    if (input.contains("joints") && input["joints"].is_object()) {
+      data_joints = input["joints"];
+    }
     
     // Extract all keypoint positions
     for (size_t i = 0; i < _skeleton_keypoint_paths.size(); ++i) {
@@ -234,8 +253,8 @@ public:
       try {
         // Get the keypoint path and extract 3D position
         const auto& kp_path =  "/" + _skeleton_keypoint_paths[i];
-        std::optional<std::array<double, 3>> pos = extract_3d_position(data_to_process, kp_path);
-          
+        std::optional<std::array<double, 3>> pos = extract_3d_position(data_joints, kp_path);
+
         if (pos) {
           joint_positions.push_back({static_cast<float>(pos->at(0)), static_cast<float>(pos->at(1)), static_cast<float>(pos->at(2))});
           keypoint_ids.push_back(static_cast<uint16_t>(i));
@@ -263,6 +282,23 @@ public:
                 .with_colors(_skeleton_colors[agent_id])
                 .with_radii({15.0f})
                 .with_show_labels(false));
+
+        
+        // Optional: Log lines between keypoints for skeleton connections
+        // We had issues with the scalar values for lines, so this is commented out for now
+
+        // Emit per-joint coordinate scalars for time-series plotting
+        for (size_t k = 0; k < joint_positions.size(); ++k) {
+          uint16_t joint_idx = keypoint_ids[k];
+          const std::array<float, 3> &p = joint_positions[k];
+          const std::string &joint_name = _skeleton_keypoint_paths[joint_idx];
+
+          std::string base = "timeseries/" + agent_id + "/" + joint_name;
+          _rec->log(base + "/x", rerun::Scalars(p[0]));
+          _rec->log(base + "/y", rerun::Scalars(p[1]));
+          _rec->log(base + "/z", rerun::Scalars(p[2]));
+        }
+        
       } catch (const std::exception& e) {
 
         // Log warning but continue processing
@@ -276,7 +312,7 @@ public:
 
     // Set the current time for this batch of data
     // This is crucial for time series visualization - all subsequent logs will use this timestamp
-    _rec->set_time_seconds("time", _skeleton_last_view_update[agent_id].time_since_epoch().count() / 1e9);
+    // (moved earlier, based directly on input timestamp)
 
     return return_type::success;
   }
@@ -361,6 +397,7 @@ public:
               keypoint_pairs,
           }})
       );
+
     } catch (const std::exception& e) {
       // Log warning but don't fail initialization
       std::cerr << "Warning: Failed to log skeleton annotation context: " << e.what() << std::endl;
