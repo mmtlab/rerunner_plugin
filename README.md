@@ -37,6 +37,7 @@ sudo cmake --install build
 Windows:
 
 ```powershell
+$env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
 cmake -Bbuild -DCMAKE_INSTALL_PREFIX="$(mads -p)"
 cmake --build build --config Release -t install
 ```
@@ -117,3 +118,4 @@ All settings are optional; if omitted, the default values are used.
 The file `example.csv` contains example data that can be used to test the plugin. You can replay this data using the `replay_plugin` plugin in MADS (see <https://github.com/MADS-NET/replay_plugin>), and visualize it using the `rerun_play` plugin.
 
 ---
+

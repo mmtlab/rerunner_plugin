@@ -317,7 +317,7 @@ public:
     return return_type::success;
   }
 
-  void set_params(void const *params) override {
+  void set_params(const json &params) override {
     // Call the parent class method to set the common parameters
     // (e.g. agent_id, etc.)
     Sink::set_params(params);
@@ -329,7 +329,7 @@ public:
     _enable_rate_limiting = _params.value("enable_rate_limiting", true);
 
     // then merge the defaults with the actually provided parameters
-    _params.merge_patch(*(json *)params);
+    _params.merge_patch(params);
 
     // Initialize Rerun with real-time optimized settings
     _rec = std::make_shared<rerun::RecordingStream>("MADS " + _params.value("agent_name", "rerunner (generic)"));
@@ -461,7 +461,7 @@ int main(int argc, char const *argv[]) {
   params["test"] = "value";
 
   // Set the parameters
-  plugin.set_params(&params);
+  plugin.set_params(params);
 
   // Process data
   plugin.load_data(input);
