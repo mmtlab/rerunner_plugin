@@ -9,14 +9,14 @@
 # Hostname: Fram-IV.local
 # Current working directory: /Users/p4010/Develop/MADS_plugins
 # Creation date: 2025-09-08T16:35:50.334+0200
-# NOTICE: MADS Version 1.3.5
+# NOTICE: MADS Version 2.0.0
 cmake_minimum_required(VERSION 3.20)
-project(rerun VERSION 1.3.5 LANGUAGES CXX)
+project(rerun VERSION 2.0.0 LANGUAGES CXX)
 if(CMAKE_BUILD_TYPE STREQUAL "")
   set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
 endif()
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT) 
-  set(CMAKE_INSTALL_PREFIX "/Users/p4010/usr/local/lib" CACHE PATH "Install path prefix, prepended onto install directories." FORCE)
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+  set(CMAKE_INSTALL_PREFIX "C:/Program Files/MADS/usr/local/bin" CACHE PATH "Install path prefix, prepended onto install directories." FORCE)
 endif()
 message(STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
 message(STATUS "CMAKE_INSTALL_PREFIX: ${CMAKE_INSTALL_PREFIX}")
@@ -36,7 +36,6 @@ set(SRC_DIR ${CMAKE_CURRENT_LIST_DIR}/src)
 
 if(UNIX AND NOT APPLE)
   set(LINUX TRUE)
-  add_compile_options(-fPIC)
 endif()
 
 # DEPENDENCIES #################################################################
@@ -77,7 +76,7 @@ endif()
 
 FetchContent_Populate(plugin 
   GIT_REPOSITORY https://github.com/pbosetti/mads_plugin.git
-  GIT_TAG        HEAD
+  GIT_TAG        v2.0-P7
   GIT_SHALLOW    TRUE
   SUBBUILD_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps/plugin-subbuild
   SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps/plugin-src
@@ -150,11 +149,13 @@ if(APPLE)
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION lib
     ARCHIVE DESTINATION lib
+    COMPONENT MadsApps
   )
 else()
   install(TARGETS ${TARGET_LIST}
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
     ARCHIVE DESTINATION lib
+    COMPONENT MadsApps
   )
 endif()

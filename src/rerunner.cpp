@@ -178,7 +178,7 @@ public:
   string kind() override { return PLUGIN_NAME; }
 
   // Implement the actual functionality here
-  return_type load_data(json const &input, string topic = "") override {
+  return_type load_data(json const &input, string topic = "", vector<unsigned char> const *blob = nullptr) override {
 
     if (topic.empty()) {
       return return_type::error;
